@@ -35,48 +35,30 @@ async function resolveTargets(port, includeIframe = true) {
     const candidates = targets.filter(t => typeFilter(t) &&
         t.webSocketDebuggerUrl &&
         !t.url.includes('devtools://') &&
-        !(t.title && t.title.includes('Launchpad')));
+        t.title === 'Manager');
 
-    // Query the Manager target's top bar for the active workspace name.
-    // The Manager renders a breadcrumb like "workspace-name / Thread Title"
-    // in the header bar, making it trivial to extract the active workspace.
+    // Determine which target currently has focus
+    let focusedTargetId = null;
     try {
-        const manager = candidates.find(t => t.title === 'Manager');
-        if (manager) {
-            const client = await CDP({ target: manager.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    (() => {
-                        // Find top-bar elements (y < 40px, narrow height, wide)
-                        const topEls = Array.from(document.querySelectorAll('div')).filter(el => {
-                            const r = el.getBoundingClientRect();
-                            return r.y >= 0 && r.y < 40 && r.height < 50 && r.height > 20 && r.width > 200;
-                        });
-                        for (const el of topEls) {
-                            const text = el.innerText.replace(/\\n/g, ' ').trim();
-                            // Match the breadcrumb format: "... workspace-name / Thread Title ..."
-                            // Strip leading icon text (arrow_back, arrow_forward, dock_to_right)
-                            const cleaned = text.replace(/^(arrow_back|arrow_forward|dock_to_right|\\s)+/g, '').trim();
-                            const slashIdx = cleaned.indexOf(' / ');
-                            if (slashIdx > 0) {
-                                return cleaned.substring(0, slashIdx).trim();
-                            }
-                        }
-                        return null;
-                    })()
-                `,
-                returnByValue: true
-            });
-            await client.close();
-            if (res.result?.value) {
-                activeWorkspaceName = res.result.value.toLowerCase();
-            }
-        }
-    } catch (_) {
-        // Non-critical — if we can't query the Manager, we just keep the last cached value
-    }
+        const focusChecks = candidates.map(async (target) => {
+            try {
+                const client = await CDP({ target: target.webSocketDebuggerUrl });
+                const { Runtime } = client;
+                await Runtime.enable();
+                const res = await Runtime.evaluate({
+                    expression: 'document.hasFocus()',
+                    returnByValue: true
+                });
+                await client.close();
+                if (res.result && res.result.value) {
+                    return target.id;
+                }
+            } catch (e) {}
+            return null;
+        });
+        const results = await Promise.all(focusChecks);
+        focusedTargetId = results.find(id => id !== null);
+    } catch (_) {}
 
     candidates.sort((a, b) => {
         // Preferred target by ID always wins (set via /window command)
@@ -84,11 +66,10 @@ async function resolveTargets(port, includeIframe = true) {
             if (a.id === preferredTargetId) return -1;
             if (b.id === preferredTargetId) return 1;
         }
-        // Dynamic fallback: prefer the target matching the active workspace
-        if (activeWorkspaceName) {
-            const aMatch = a.title.toLowerCase().includes(activeWorkspaceName) ? 1 : 0;
-            const bMatch = b.title.toLowerCase().includes(activeWorkspaceName) ? 1 : 0;
-            if (aMatch !== bMatch) return bMatch - aMatch;
+        // Fallback: prefer the currently focused window
+        if (focusedTargetId) {
+            if (a.id === focusedTargetId) return -1;
+            if (b.id === focusedTargetId) return 1;
         }
         return 0;
     });
@@ -97,16 +78,10 @@ async function resolveTargets(port, includeIframe = true) {
 }
 
 /**
- * Sort candidates so the Manager target comes first.
- * Manager holds the active conversation state, so it's the most reliable
- * target for model selection, chat input, and status checks.
+ * Sort candidates to prioritize the focused window.
  */
 function prioritizeManager(candidates) {
-    return [...candidates].sort((a, b) => {
-        if (a.title === 'Manager') return -1;
-        if (b.title === 'Manager') return 1;
-        return 0;
-    });
+    return candidates; // resolveTargets already sorts by focus now!
 }
 
 /**
@@ -297,19 +272,30 @@ async function snapshotChatState(port) {
  * 3. Parse the last user message + model response from the log
  * 4. Fall back to DOM extraction only if the file doesn't exist
  */
-async function getFullLatestResponse(port) {
+async function getFullLatestResponse(port, sinceSnapshot = false) {
     // --- Primary: file-system extraction from the active thread's log ---
     try {
         const activeId = await getActiveThreadId(port);
         if (activeId) {
             const logPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', activeId, '.system_generated', 'logs', 'overview.txt');
             if (fs.existsSync(logPath)) {
-                // Read the last ~20KB of the file (enough for recent messages)
                 const stats = fs.statSync(logPath);
-                const readSize = Math.min(stats.size, 20000);
+                
+                let readSize = Math.min(stats.size, 20000);
+                let startPos = Math.max(0, stats.size - readSize);
+                
+                if (sinceSnapshot && lastSnapshotFileSize > 0) {
+                    if (stats.size > lastSnapshotFileSize) {
+                        readSize = stats.size - lastSnapshotFileSize;
+                        startPos = lastSnapshotFileSize;
+                    } else {
+                        return ""; // No new bytes written
+                    }
+                }
+                
                 const fd = fs.openSync(logPath, 'r');
                 const buf = Buffer.alloc(readSize);
-                fs.readSync(fd, buf, 0, readSize, stats.size - readSize);
+                fs.readSync(fd, buf, 0, readSize, startPos);
                 fs.closeSync(fd);
                 const tail = buf.toString('utf8');
                 
@@ -335,11 +321,15 @@ async function getFullLatestResponse(port) {
                 
                 if (lastModelMsg) {
                     const parts = [];
-                    if (lastUserMsg) parts.push('👤 User:\n' + lastUserMsg);
+                    // Only include User prefix if not explicitly doing a delta extraction
+                    if (!sinceSnapshot && lastUserMsg) parts.push('👤 User:\n' + lastUserMsg);
                     // Truncate very long model responses for Telegram
                     const truncated = lastModelMsg.length > 3000 ? lastModelMsg.substring(0, 3000) + '\n\n[...truncated]' : lastModelMsg;
                     parts.push('🤖 Agent:\n' + truncated);
                     return parts.join('\n\n');
+                } else if (sinceSnapshot) {
+                    // We found no new model content in the diff (maybe only tool calls)
+                    return "";
                 }
             }
         }
@@ -347,6 +337,7 @@ async function getFullLatestResponse(port) {
         console.log('[getFullLatestResponse] File-system extraction failed:', e.message);
     }
     
+    if (sinceSnapshot) return ""; // Do not fallback to DOM if we wanted a diff and failed
     // --- Fallback: DOM extraction (may be stale if threads were switched) ---
     const candidates = await resolveTargets(port);
     for (const target of candidates) {
@@ -457,30 +448,57 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
     const startTime = Date.now();
     let consecutiveIdleCount = 0;
     let lastProgressTime = 0;
-    const GRACE_PERIOD_MS = 6000; // Wait at least 6s before accepting idle — gives IDE time to start generating
+    const GRACE_PERIOD_MS = 6000; // Wait at least 6s before accepting idle
+
+    let chatClient = null;
+    let lastNetworkActivity = 0;
+
+    const cleanup = async () => {
+        if (chatClient) {
+            try { await chatClient.close(); } catch(e) {}
+            chatClient = null;
+        }
+    };
 
     while (Date.now() - startTime < timeoutMs) {
-        // Re-fetch targets on each iteration to avoid stale WebSocket connections
-        let candidates;
-        try {
-            const raw = await resolveTargets(port);
-            // Manager has the active conversation — check it first
-            candidates = prioritizeManager(raw);
-        } catch(e) {
-            await new Promise(r => setTimeout(r, 3000));
-            continue;
+        const elapsed = Date.now() - startTime;
+        if (onProgress && elapsed - lastProgressTime >= 4000) {
+            lastProgressTime = elapsed;
+            onProgress('typing');
         }
 
-        let foundChat = false;
-        let isIdle = false;
-        let isGenerating = false;
+        try {
+            if (!chatClient) {
+                const raw = await resolveTargets(port);
+                const candidates = prioritizeManager(raw);
+                for (const target of candidates) {
+                    try {
+                        const client = await CDP({ target: target.webSocketDebuggerUrl });
+                        const { Runtime, Network } = client;
+                        await Runtime.enable();
+                        const check = await Runtime.evaluate({
+                            expression: `${UI_LOCATORS_SCRIPT}\n(!!AG_UI.getVisibleChatContainer())`,
+                            returnByValue: true
+                        });
+                        if (check?.result?.value) {
+                            chatClient = client;
+                            await Network.enable();
+                            Network.dataReceived(() => {
+                                lastNetworkActivity = Date.now();
+                            });
+                            chatClient.on('disconnect', () => {
+                                chatClient = null;
+                            });
+                            break;
+                        } else {
+                            await client.close();
+                        }
+                    } catch(e) {}
+                }
+            }
 
-        for (const target of candidates) {
-            try {
-                const client = await CDP({ target: target.webSocketDebuggerUrl });
-                const { Runtime } = client;
-                await Runtime.enable();
-                const check = await Runtime.evaluate({
+            if (chatClient) {
+                const check = await chatClient.Runtime.evaluate({
                     expression: `
                         ${UI_LOCATORS_SCRIPT}
                         (function() {
@@ -489,7 +507,6 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
                             const isInputDisabled = editor ? (editor.getAttribute('contenteditable') === 'false' || editor.disabled) : false;
                             const isSpinning = AG_UI.isLoading();
                             
-                            // Check if AutoAccept is active and there is a button waiting to be clicked
                             const aaActive = !!window.__AA_BOT_OBSERVER_ACTIVE && !window.__AA_BOT_PAUSED;
                             let hasPendingButton = false;
                             if (aaActive) {
@@ -501,47 +518,42 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
                                 });
                             }
                             
-                            const isIdle = !isGenerating && !isInputDisabled && !isSpinning && !hasPendingButton;
-                            const hasChat = !!AG_UI.getVisibleChatContainer();
-                            return { hasChat, isGenerating, isIdle, isSpinning, hasPendingButton };
+                            return { isGenerating, isSpinning, isInputDisabled, hasPendingButton };
                         })()
                     `,
                     returnByValue: true
                 });
+                
                 const val = check?.result?.value;
-                await client.close();
-
-                if (val && val.hasChat) {
-                    foundChat = true;
-                    if (val.isGenerating) isGenerating = true;
-                    if (val.isIdle && !val.isGenerating) isIdle = true;
-                    break;
+                if (!val) {
+                    await cleanup();
+                    continue;
                 }
-            } catch(e) { console.debug(`[waitForAgent] target ${target.title}: ${e.message}`); }
-        }
-        
-        if (foundChat) {
-            const elapsed = Date.now() - startTime;
-            if (isIdle && !isGenerating) {
-                // Only count idle after grace period — prevents false "done" before IDE starts
+
+                const isNetworkActive = (Date.now() - lastNetworkActivity < 4000);
+                const isWorking = val.isGenerating || val.isSpinning || isNetworkActive;
+                const isIdle = !isWorking && !val.hasPendingButton && !val.isInputDisabled;
+
                 if (elapsed > GRACE_PERIOD_MS) {
-                    consecutiveIdleCount++;
-                    if (consecutiveIdleCount >= 4) return true;
+                    if (isIdle) {
+                        consecutiveIdleCount++;
+                        if (consecutiveIdleCount >= 4) {
+                            await cleanup();
+                            return true;
+                        }
+                    } else {
+                        consecutiveIdleCount = 0;
+                    }
                 }
-            } else {
-                consecutiveIdleCount = 0;
             }
-        }
-
-        // Send typing action every 4 seconds to keep Telegram UI active
-        const elapsed = Date.now() - startTime;
-        if (onProgress && elapsed - lastProgressTime >= 4000) {
-            lastProgressTime = elapsed;
-            onProgress('typing');
+        } catch(e) {
+            await cleanup();
         }
 
         await new Promise(r => setTimeout(r, 2000));
     }
+    
+    await cleanup();
     return false;
 }
 
@@ -721,6 +733,7 @@ async function triggerModelMenu(port) {
 
 async function listAgentThreads(port) {
     const candidates = await resolveTargets(port, false);
+    const allWorkspaces = [];
     for (const target of candidates) {
         try {
             const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -764,11 +777,23 @@ async function listAgentThreads(port) {
             });
             await client.close();
             if (res.result?.value && res.result.value.length > 0) {
-                return res.result.value;
+                // Add new workspaces, merging threads if workspace already exists
+                res.result.value.forEach(newWs => {
+                    const existingWs = allWorkspaces.find(ws => ws.workspace === newWs.workspace);
+                    if (existingWs) {
+                        newWs.threads.forEach(newT => {
+                            if (!existingWs.threads.some(t => t.id === newT.id)) {
+                                existingWs.threads.push(newT);
+                            }
+                        });
+                    } else {
+                        allWorkspaces.push(newWs);
+                    }
+                });
             }
         } catch(e) { console.debug(`[listAgentThreads] target error: ${e.message}`); }
     }
-    return [];
+    return allWorkspaces;
 }
 
 async function switchAgentThread(port, threadId) {
@@ -802,30 +827,33 @@ async function switchAgentThread(port, threadId) {
 }
 
 async function getActiveThreadId(port) {
-    const candidates = await resolveTargets(port, false);
-    for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    (() => {
-                        const all = document.querySelectorAll('[data-testid^="convo-pill-"]');
-                        for (let el of all) {
-                            const row = el.closest('[role="button"]');
-                            if (row && row.classList.contains('bg-list-hover')) {
-                                return el.getAttribute('data-testid').replace('convo-pill-', '');
-                            }
-                        }
-                        return null;
-                    })()
-                `,
-                returnByValue: true
-            });
-            await client.close();
-            if (res.result?.value) return res.result.value;
-        } catch(e) { console.debug(`[getActiveThreadId] target error: ${e.message}`); }
+    // Relying on the DOM for the active thread fails if the sidebar is closed or UI changes.
+    // The most robust method is to check the most recently modified directory in the brain folder.
+    try {
+        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        if (!fs.existsSync(brainDir)) return null;
+
+        const dirs = fs.readdirSync(brainDir, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory() && dirent.name.length > 20 && dirent.name.includes('-')) // basic uuid check
+            .map(dirent => {
+                const logPath = path.join(brainDir, dirent.name, '.system_generated', 'logs', 'overview.txt');
+                let mtime = 0;
+                try {
+                    if (fs.existsSync(logPath)) {
+                        mtime = fs.statSync(logPath).mtimeMs;
+                    } else {
+                        mtime = fs.statSync(path.join(brainDir, dirent.name)).mtimeMs;
+                    }
+                } catch(e) {}
+                return { name: dirent.name, mtime };
+            })
+            .sort((a, b) => b.mtime - a.mtime); // Sort newest first
+
+        if (dirs.length > 0) {
+            return dirs[0].name;
+        }
+    } catch (e) {
+        console.error('[getActiveThreadId] File system error:', e.message);
     }
     return null;
 }

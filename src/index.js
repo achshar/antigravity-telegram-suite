@@ -229,7 +229,8 @@ bot.command('status', async (ctx) => {
     msg += ideCheck ? t('status.ide_running') + '\n' : t('status.ide_stopped') + '\n';
     
     try {
-        await getActiveThreadId(CDP_PORT);
+        const { resolveTargets } = require('./cdp_controller');
+        await resolveTargets(CDP_PORT, false);
         msg += t('status.cdp_active') + '\n';
     } catch {
         msg += t('status.cdp_inactive') + '\n';
@@ -240,7 +241,7 @@ bot.command('status', async (ctx) => {
     try {
         const activeId = await getActiveThreadId(CDP_PORT);
         if (activeId) {
-            const workspaces = await listAgentThreads(CDP_PORT);
+            const workspaces = await listAgentThreads(CDP_PORT).catch(() => []);
             let activeWorkspace = null;
             let activeThread = null;
             
@@ -257,11 +258,13 @@ bot.command('status', async (ctx) => {
                 msg += `\n💬 <b>Chat:</b>\n`;
                 msg += `- Workspace: ${activeWorkspace}\n`;
                 msg += `- Thread: ${activeThread}\n`;
-                const currentModel = await getCurrentModel(CDP_PORT);
+                const currentModel = await getCurrentModel(CDP_PORT).catch(() => null);
                 if (currentModel) msg += `- Model: ${currentModel}\n`;
-                const isWorking = await isAgentWorking(CDP_PORT);
-                msg += `- Status: ${isWorking ? 'Working...' : 'Idle'}\n`;
+            } else {
+                msg += `\n💬 <b>Chat:</b>\n- ID: ${activeId}\n`;
             }
+            const isWorking = await isAgentWorking(CDP_PORT).catch(() => false);
+            msg += `- Status: ${isWorking ? 'Working...' : 'Idle'}\n`;
         }
     } catch (e) {
         // silently fail if we can't get chat info
@@ -346,7 +349,7 @@ bot.command('ask', (ctx) => {
             
             const isDone = await waitForAgentResponse(CDP_PORT, 450000, createProgressHandler(ctx));
             if (isDone) {
-                let text = await getFullLatestResponse(CDP_PORT);
+                let text = await getFullLatestResponse(CDP_PORT, true);
                 text = stripQueryFromResponse(text, query);
                 if (!text) text = t('ask.done_empty');
                 text = await appendThreadFooter(text);
@@ -364,20 +367,33 @@ bot.command('ask', (ctx) => {
 bot.command('cmd', async (ctx) => {
     const cmdStr = ctx.message.text.split(' ').slice(1).join(' ');
     if (!cmdStr) {
-        return ctx.reply('Lütfen çalıştırılacak komutu girin. Örnek: /cmd ls -la');
+        return ctx.reply('Please enter a command to run. Example: /cmd ls -la');
     }
     
-    ctx.reply(`⏳ Komut çalıştırılıyor:\n\`${cmdStr}\``, { parse_mode: 'MarkdownV2' });
+    // Intercept 'cd' to maintain directory state across commands
+    if (cmdStr.startsWith('cd ') || cmdStr === 'cd') {
+        const targetDir = cmdStr.split(' ')[1] || config.projectsDir;
+        const resolvedDir = path.resolve(currentWorkspaceDir, targetDir);
+        
+        if (fs.existsSync(resolvedDir) && fs.statSync(resolvedDir).isDirectory()) {
+            currentWorkspaceDir = resolvedDir;
+            return ctx.reply(`✅ Working directory changed to:\n\`${currentWorkspaceDir}\``, { parse_mode: 'MarkdownV2' });
+        } else {
+            return ctx.reply(`❌ Directory not found:\n\`${resolvedDir}\``, { parse_mode: 'MarkdownV2' });
+        }
+    }
     
-    exec(cmdStr, { timeout: 60000, maxBuffer: 1024 * 1024 * 5 }, async (error, stdout, stderr) => {
+    ctx.reply(`⏳ Running command in \`${currentWorkspaceDir}\`:\n\`${cmdStr}\``, { parse_mode: 'MarkdownV2' });
+    
+    exec(cmdStr, { cwd: currentWorkspaceDir, timeout: 60000, maxBuffer: 1024 * 1024 * 5 }, async (error, stdout, stderr) => {
         let output = "";
         if (stdout) output += `[STDOUT]\n${stdout}\n`;
         if (stderr) output += `[STDERR]\n${stderr}\n`;
         if (error) output += `[ERROR]\n${error.message}\n`;
         
-        if (!output) output = "✅ Komut başarıyla çalıştı (Çıktı yok).";
+        if (!output) output = "✅ Command executed successfully (No output).";
         
-        await sendLongMessage(ctx, output, `💻 Komut Çıktısı:`);
+        await sendLongMessage(ctx, output, `💻 Command Output:`);
     });
 });
 

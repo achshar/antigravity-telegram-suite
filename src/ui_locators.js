@@ -32,17 +32,18 @@ const UI_LOCATORS_SCRIPT = `
             // --- Primary strategy: anchor from the active chat input ---
             const input = AG_UI.getChatInput();
             if (input) {
-                let el = input;
+                let el = input.parentElement;
                 while (el) {
-                    if (el.id === 'conversation' || el.classList.contains('interactive-session')) {
+                    if (el.id === 'conversation' || el.classList.contains('interactive-session') || (el.className && typeof el.className === 'string' && el.className.includes('overflow-y-auto'))) {
                         return el;
                     }
                     el = el.parentElement;
                 }
+                return document.body; // Fallback to body if we have an input but couldn't find the exact container
             }
 
             // --- Fallback: query all candidates and pick the first visible one ---
-            const containers = Array.from(document.querySelectorAll('#conversation, .flex.w-full.grow.flex-col.overflow-hidden, #chat, .interactive-session'));
+            const containers = Array.from(document.querySelectorAll('#conversation, .flex.w-full.grow.flex-col.overflow-hidden, #chat, .interactive-session, [class*="overflow-y-auto"]'));
             return containers.find(c => {
                 let isVisible = true;
                 let el = c;
@@ -90,11 +91,25 @@ const UI_LOCATORS_SCRIPT = `
          * @returns {boolean} True if generating/loading
          */
         isLoading: () => {
-            return Array.from(document.querySelectorAll('.codicon-loading, .loading, [class*="animate-spin"], [class*="spinner"], [class*="loader"]')).some(el => {
+            const chatArea = AG_UI.getVisibleChatContainer();
+            const elements = chatArea 
+                ? chatArea.querySelectorAll('.codicon-loading, .loading, [class*="animate-spin"], [class*="spinner"], [class*="loader"]')
+                : document.querySelectorAll('.codicon-loading, .loading, [class*="animate-spin"], [class*="spinner"], [class*="loader"]');
+                
+            return Array.from(elements).some(el => {
                 if (el.offsetParent === null) return false;
-                if (el.className.includes('h-3') && el.className.includes('w-3')) return false;
+                // Ignore tiny inline spinners in the file tree, but NOT in the chat area
+                if (!chatArea && el.className.includes('h-3') && el.className.includes('w-3')) return false;
+                // Ignore header sync/progress spinners 
+                if (el.className.includes('google-symbols') && el.textContent.includes('progress_activity')) return false;
+                
                 const parent = el.parentElement;
-                if (parent && (parent.className.includes('opacity-') || parent.className.includes('hidden'))) return false;
+                if (parent) {
+                    // Ignore if parent is strictly hidden (not via a hover class)
+                    if (parent.className.match(/\\bhidden\\b/) && !parent.className.includes('hover:hidden')) return false;
+                    // Ignore if parent has strict low opacity (like 30%), but not transition/hover opacities
+                    if (parent.className.match(/\\bopacity-[0-4]0\\b/) && !parent.className.includes('hover:')) return false;
+                }
                 return true;
             });
         },
