@@ -469,7 +469,7 @@ bot.command(['agents', 'a'], async (ctx) => {
                 msg += `<b>📁 ${ws.workspace}</b>\n`;
                 for (const th of recentThreads) {
                     cachedAgentThreads.push(th);
-                    msg += `  /a${index} - ${th.name} <i>(${th.time})</i>\n`;
+                    msg += `• /a${index} - ${th.name} <i>(${th.time})</i>\n`;
                     index++;
                 }
                 msg += '\n';
