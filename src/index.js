@@ -579,8 +579,45 @@ bot.hears(/^\/artifact_(\d+)$/, async (ctx) => {
         
         const ext = path.extname(artifact.name).toLowerCase();
         try {
-            if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp') {
+            if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
                 await ctx.replyWithPhoto({ source: artifact.path });
+            } else if (ext === '.webp') {
+                const { execSync } = require('child_process');
+                
+                let frameCount = 1;
+                try {
+                    const output = execSync(`ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "${artifact.path}"`);
+                    frameCount = parseInt(output.toString().trim(), 10) || 1;
+                } catch (e) {
+                    console.error('ffprobe failed to read frame count:', e.message);
+                }
+
+                if (frameCount <= 1) {
+                    // It's a static WebP image
+                    await ctx.replyWithPhoto({ source: artifact.path });
+                } else {
+                    // It's an animated WebP
+                    const mp4Path = artifact.path.replace(/\.webp$/i, '.mp4');
+                    if (!fs.existsSync(mp4Path)) {
+                        await ctx.reply('⏳ Converting WebP to MP4 video for native playback...');
+                        try {
+                            execSync(`ffmpeg -y -i "${artifact.path}" -vcodec libx264 -pix_fmt yuv420p "${mp4Path}"`);
+                        } catch (err) {
+                            console.error('FFmpeg conversion failed:', err.message);
+                        }
+                    }
+                    if (fs.existsSync(mp4Path)) {
+                        const stats = fs.statSync(mp4Path);
+                        if (stats.size > 1024) { // Ensure it's not an empty/broken file
+                            await ctx.replyWithVideo({ source: mp4Path });
+                        } else {
+                            await ctx.replyWithDocument({ source: artifact.path });
+                        }
+                        try { fs.unlinkSync(mp4Path); } catch(e) { console.error('Cleanup failed:', e.message); }
+                    } else {
+                        await ctx.replyWithDocument({ source: artifact.path });
+                    }
+                }
             } else if (ext === '.mp4' || ext === '.mov') {
                 await ctx.replyWithVideo({ source: artifact.path });
             } else if (ext === '.md') {

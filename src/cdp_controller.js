@@ -35,7 +35,7 @@ async function resolveTargets(port, includeIframe = true) {
     const candidates = targets.filter(t => typeFilter(t) &&
         t.webSocketDebuggerUrl &&
         !t.url.includes('devtools://') &&
-        t.title === 'Manager');
+        !(t.title && t.title.includes('Launchpad')));
 
     // Determine which target currently has focus
     let focusedTargetId = null;
@@ -483,8 +483,13 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
                         if (check?.result?.value) {
                             chatClient = client;
                             await Network.enable();
-                            Network.dataReceived(() => {
-                                lastNetworkActivity = Date.now();
+                            Network.responseReceived((params) => {
+                                // Only track actual API/WebSocket requests to avoid background heartbeat noise
+                                if (params.type === 'Fetch' || params.type === 'XHR' || params.type === 'WebSocket') {
+                                    if (!params.response.url.includes('telemetry') && !params.response.url.includes('ping')) {
+                                        lastNetworkActivity = Date.now();
+                                    }
+                                }
                             });
                             chatClient.on('disconnect', () => {
                                 chatClient = null;
@@ -530,9 +535,11 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
                     continue;
                 }
 
-                const isNetworkActive = (Date.now() - lastNetworkActivity < 4000);
+                // If generating/spinning are true, it's definitely working.
+                // If they are false, only trust network activity if the input is disabled or we just saw network activity very recently.
+                const isNetworkActive = (Date.now() - lastNetworkActivity < 3000);
                 const isWorking = val.isGenerating || val.isSpinning || isNetworkActive;
-                const isIdle = !isWorking && !val.hasPendingButton && !val.isInputDisabled;
+                const isIdle = !isWorking && !val.hasPendingButton;
 
                 if (elapsed > GRACE_PERIOD_MS) {
                     if (isIdle) {
@@ -732,7 +739,8 @@ async function triggerModelMenu(port) {
 }
 
 async function listAgentThreads(port) {
-    const candidates = await resolveTargets(port, false);
+    const raw = await resolveTargets(port, false);
+    const candidates = raw.filter(t => t.title === 'Manager');
     const allWorkspaces = [];
     for (const target of candidates) {
         try {
@@ -797,7 +805,8 @@ async function listAgentThreads(port) {
 }
 
 async function switchAgentThread(port, threadId) {
-    const candidates = await resolveTargets(port, false);
+    const raw = await resolveTargets(port, false);
+    const candidates = raw.filter(t => t.title === 'Manager');
     for (const target of candidates) {
         try {
             const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -820,7 +829,25 @@ async function switchAgentThread(port, threadId) {
                 returnByValue: true
             });
             await client.close();
-            if (res.result?.value) return true;
+            if (res.result?.value) {
+                // Manually bump the mtime of the thread's log file so getActiveThreadId picks it up instantly
+                try {
+                    const os = require('os');
+                    const path = require('path');
+                    const fs = require('fs');
+                    const logPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId, '.system_generated', 'logs', 'overview.txt');
+                    const time = new Date();
+                    if (fs.existsSync(logPath)) {
+                        fs.utimesSync(logPath, time, time);
+                    } else {
+                        const dirPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId);
+                        if (fs.existsSync(dirPath)) fs.utimesSync(dirPath, time, time);
+                    }
+                } catch(err) {
+                    console.debug('[switchAgentThread] failed to bump mtime:', err.message);
+                }
+                return true;
+            }
         } catch(e) { console.debug(`[switchAgentThread] target error: ${e.message}`); }
     }
     return false;
