@@ -302,7 +302,7 @@ async function appendThreadFooter(text) {
     return text;
 }
 
-bot.command(['latest', 'lt'], async (ctx) => {
+bot.command(['latest', 'l'], async (ctx) => {
     try {
         let text = await getFullLatestResponse(CDP_PORT, false, true);
         text = await appendThreadFooter(text);
