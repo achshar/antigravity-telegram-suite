@@ -227,7 +227,7 @@ bot.command('close_window', async (ctx) => {
     }
 });
 
-bot.command('status', async (ctx) => {
+bot.command(['status', 'st'], async (ctx) => {
     let msg = t('status.title') + '\n';
     
     const ideCheck = await isIDERunning();
