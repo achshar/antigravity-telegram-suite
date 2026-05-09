@@ -227,7 +227,7 @@ bot.command('close_window', async (ctx) => {
     }
 });
 
-bot.command(['status', 'st'], async (ctx) => {
+bot.command(['status', 's'], async (ctx) => {
     let msg = t('status.title') + '\n';
     
     const ideCheck = await isIDERunning();
@@ -312,7 +312,7 @@ bot.command(['latest', 'lt'], async (ctx) => {
     }
 });
 
-bot.command(['screenshot', 'sc'], async (ctx) => {
+bot.command(['screenshot', 'ss'], async (ctx) => {
     try {
         const buffer = await captureFullIDEScreenshot(CDP_PORT);
         await ctx.replyWithPhoto({ source: buffer });
