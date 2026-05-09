@@ -355,7 +355,6 @@ bot.command('ask', (ctx) => {
                 let text = await getFullLatestResponse(CDP_PORT, true);
                 text = stripQueryFromResponse(text, query);
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
                 await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
@@ -1256,7 +1255,6 @@ bot.on('text', (ctx) => {
                 let text = await getFullLatestResponse(CDP_PORT);
                 text = stripQueryFromResponse(text, query);
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
                 await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
@@ -1319,7 +1317,6 @@ bot.on(['photo', 'document'], (ctx) => {
                     text = stripQueryFromResponse(text, caption);
                 }
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
                 await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
