@@ -545,7 +545,7 @@ bot.command(['artifacts', 'af'], async (ctx) => {
         for (let i = 0; i < cachedArtifacts.length; i++) {
             const filename = cachedArtifacts[i].name;
             const { displayName, icon } = getArtifactDisplayInfo(filename, cachedArtifacts[i].path);
-            msg += `${icon} /af${i + 1} - ${displayName}\n`;
+            msg += `• ${icon} /af${i + 1} - ${displayName}\n`;
         }
         
         ctx.reply(msg, { parse_mode: 'HTML' });
