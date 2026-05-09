@@ -426,7 +426,7 @@ bot.command('new', async (ctx) => {
     }
 });
 
-bot.command('agents', async (ctx) => {
+bot.command(['agents', 'a'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     const num = parseInt(parts[1], 10);
     
@@ -616,7 +616,7 @@ bot.hears(/^\/artifact_(\d+)$/, async (ctx) => {
     }
 });
 
-bot.command('model', async (ctx) => {
+bot.command(['model', 'm'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     parts.shift();
     const modelName = parts.join(' ').trim();
@@ -667,7 +667,7 @@ bot.action(/md_(.+)/, async (ctx) => {
 
 // ===== AUTO-ACCEPT =====
 
-bot.command('autoaccept', async (ctx) => {
+bot.command(['autoaccept', 'aa'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     parts.shift();
     const subCommand = parts.join(' ').trim().toLowerCase();
