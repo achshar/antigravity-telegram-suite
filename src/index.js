@@ -545,8 +545,17 @@ bot.command('artifacts', async (ctx) => {
             const ext = path.extname(filename).toLowerCase();
             let icon = '📄';
             if (ext === '.md' || ext === '.txt') icon = '📝';
-            else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp') icon = '🖼️';
+            else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') icon = '🖼️';
             else if (ext === '.mp4' || ext === '.mov') icon = '🎥';
+            else if (ext === '.webp') {
+                let frameCount = 1;
+                try {
+                    const { execSync } = require('child_process');
+                    const output = execSync(`ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "${path.join(artifactsDir, filename)}"`);
+                    frameCount = parseInt(output.toString().trim(), 10) || 1;
+                } catch (e) {}
+                icon = frameCount > 1 ? '🎥' : '🖼️';
+            }
 
             const extless = filename.replace(/\.[^/.]+$/, "");
             let baseName = extless;
