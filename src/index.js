@@ -165,7 +165,7 @@ bot.start((ctx) => {
     ctx.reply(t('bot.started', { chatId: ctx.chat.id }));
 });
 
-bot.help((ctx) => {
+bot.command(['help', 'h'], (ctx) => {
     const helpMessage = `
 ${t('help.title')}
 
@@ -302,7 +302,7 @@ async function appendThreadFooter(text) {
     return text;
 }
 
-bot.command('latest', async (ctx) => {
+bot.command(['latest', 'lt'], async (ctx) => {
     try {
         let text = await getFullLatestResponse(CDP_PORT, false, true);
         text = await appendThreadFooter(text);
@@ -312,7 +312,7 @@ bot.command('latest', async (ctx) => {
     }
 });
 
-bot.command('screenshot', async (ctx) => {
+bot.command(['screenshot', 'sc'], async (ctx) => {
     try {
         const buffer = await captureFullIDEScreenshot(CDP_PORT);
         await ctx.replyWithPhoto({ source: buffer });
@@ -500,7 +500,7 @@ bot.hears(/^\/agents_(\d+)$/, async (ctx) => {
     }
 });
 
-bot.command('artifacts', async (ctx) => {
+bot.command(['artifacts', 'af'], async (ctx) => {
     try {
         const activeId = await getActiveThreadId(CDP_PORT);
         if (!activeId) {
