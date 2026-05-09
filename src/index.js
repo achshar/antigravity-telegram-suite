@@ -542,27 +542,43 @@ bot.command('artifacts', async (ctx) => {
         let msg = t('artifacts.list_title') || '📎 <b>Artifacts for Current Thread:</b>\\n\\n';
         for (let i = 0; i < cachedArtifacts.length; i++) {
             const filename = cachedArtifacts[i].name;
-            let displayName = filename;
-            if (filename.startsWith('media__')) {
-                const match = filename.match(/media__(\d+)\.\w+/);
-                if (match) {
-                    const date = new Date(parseInt(match[1], 10));
-                    const today = new Date();
-                    const yesterday = new Date(today);
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    
-                    let dateStr = '';
-                    if (date.toDateString() === today.toDateString()) dateStr = 'Today';
-                    else if (date.toDateString() === yesterday.toDateString()) dateStr = 'Yesterday';
-                    else dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                    
-                    const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                    displayName = `Media (${dateStr} ${timeStr})`;
-                }
-            } else {
-                displayName = filename.replace(/\.[^/.]+$/, "").replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            const ext = path.extname(filename).toLowerCase();
+            let icon = '📄';
+            if (ext === '.md' || ext === '.txt') icon = '📝';
+            else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp') icon = '🖼️';
+            else if (ext === '.mp4' || ext === '.mov') icon = '🎥';
+
+            const extless = filename.replace(/\.[^/.]+$/, "");
+            let baseName = extless;
+            let dateStrFull = '';
+
+            const timeMatch = extless.match(/_(\d{13})$/);
+            if (timeMatch) {
+                baseName = extless.slice(0, -timeMatch[0].length);
+                if (baseName.endsWith('_')) baseName = baseName.slice(0, -1);
+                
+                const date = new Date(parseInt(timeMatch[1], 10));
+                const today = new Date();
+                const yesterday = new Date(today);
+                yesterday.setDate(yesterday.getDate() - 1);
+                
+                let dateStr = '';
+                if (date.toDateString() === today.toDateString()) dateStr = 'Today';
+                else if (date.toDateString() === yesterday.toDateString()) dateStr = 'Yesterday';
+                else dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                
+                const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                dateStrFull = ` (${dateStr} ${timeStr})`;
             }
-            msg += `/artifact_${i + 1} - ${displayName}\n`;
+
+            baseName = baseName.replace(/_/g, ' ')
+                               .split(' ')
+                               .filter(w => w.length > 0)
+                               .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                               .join(' ');
+            
+            let displayName = `${baseName}${dateStrFull}`;
+            msg += `${icon} /artifact_${i + 1} - ${displayName}\n`;
         }
         
         ctx.reply(msg, { parse_mode: 'HTML' });
