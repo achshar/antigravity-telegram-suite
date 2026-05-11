@@ -453,8 +453,7 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
 
             if (chatClient) {
                 const check = await chatClient.Runtime.evaluate({
-                    expression: `${UI_LOCATORS_SCRIPT}
-return ${AGENT_STATE_EVAL_SCRIPT};`,
+                    expression: `${UI_LOCATORS_SCRIPT}\n${AGENT_STATE_EVAL_SCRIPT}`,
                     returnByValue: true
                 });
                 
