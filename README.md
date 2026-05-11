@@ -128,9 +128,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 antigravity-telegram-suite/
 ├── src/
+│   ├── utils/
+│   │   ├── cdp_utils.js        # CDP connection and target resolution helpers
+│   │   └── artifact_utils.js   # Binary payload checking for WebP animations
 │   ├── index.js           # Main bot logic & Telegram handlers
 │   ├── cdp_controller.js   # Chrome DevTools Protocol communication
 │   ├── autoaccept.js       # Auto-accept button clicker via CDP
+│   ├── ui_locators.js      # Centralized DOM locators and evaluation strings
 │   ├── i18n.js             # Internationalization module
 │   └── platform.js         # Cross-platform OS abstraction
 ├── locales/
