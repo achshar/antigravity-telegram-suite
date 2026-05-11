@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const cdpUtils = require('./utils/cdp_utils');
 
 // Store the previous full chat state to filter out old messages
 let globalLastChatState = "";
@@ -21,74 +22,18 @@ let windowCache = [];
  * @param {boolean} includeIframe - whether to include iframe/webview types
  * @returns {Promise<Array>} sorted array of CDP target objects
  */
-const { UI_LOCATORS_SCRIPT } = require('./ui_locators');
+const { UI_LOCATORS_SCRIPT, AGENT_STATE_EVAL_SCRIPT } = require('./ui_locators');
 
 // Cache for the active workspace name, refreshed on each resolveTargets call
 let activeWorkspaceName = null;
 
-async function resolveTargets(port, includeIframe = true) {
-    const raw = await httpGet(`http://127.0.0.1:${port}/json`);
-    const targets = JSON.parse(raw);
-    const typeFilter = includeIframe
-        ? t => (t.type === 'page' || t.type === 'iframe' || t.type === 'webview')
-        : t => (t.type === 'page' || t.type === 'webview');
-    const candidates = targets.filter(t => typeFilter(t) &&
-        t.webSocketDebuggerUrl &&
-        !t.url.includes('devtools://') &&
-        !(t.title && t.title.includes('Launchpad')));
 
-    // Determine which target currently has focus
-    let focusedTargetId = null;
-    try {
-        const focusChecks = candidates.map(async (target) => {
-            try {
-                const client = await CDP({ target: target.webSocketDebuggerUrl });
-                const { Runtime } = client;
-                await Runtime.enable();
-                const res = await Runtime.evaluate({
-                    expression: 'document.hasFocus()',
-                    returnByValue: true
-                });
-                await client.close();
-                if (res.result && res.result.value) {
-                    return target.id;
-                }
-            } catch (e) {}
-            return null;
-        });
-        const results = await Promise.all(focusChecks);
-        focusedTargetId = results.find(id => id !== null);
-    } catch (_) {}
-
-    candidates.sort((a, b) => {
-        // Preferred target by ID always wins (set via /window command)
-        if (preferredTargetId) {
-            if (a.id === preferredTargetId) return -1;
-            if (b.id === preferredTargetId) return 1;
-        }
-        // Fallback: prefer the currently focused window
-        if (focusedTargetId) {
-            if (a.id === focusedTargetId) return -1;
-            if (b.id === focusedTargetId) return 1;
-        }
-        return 0;
-    });
-
-    return candidates;
-}
-
-/**
- * Sort candidates to prioritize the focused window.
- */
-function prioritizeManager(candidates) {
-    return candidates; // resolveTargets already sorts by focus now!
-}
 
 /**
  * List all available IDE windows for the /window command.
  */
 async function listWindows(port) {
-    const targets = await resolveTargets(port, false);
+    const targets = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     windowCache = targets.map(t => ({
         id: t.id,
         title: t.title || 'Untitled',
@@ -232,7 +177,7 @@ async function snapshotChatState(port) {
     }
     
     // DOM fallback for legacy behavior
-    const candidates = await resolveTargets(port);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId);
     for (const target of candidates) {
         try {
             const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -343,7 +288,7 @@ async function getFullLatestResponse(port, sinceSnapshot = false, includePrefixe
     
     if (sinceSnapshot) return ""; // Do not fallback to DOM if we wanted a diff and failed
     // --- Fallback: DOM extraction (may be stale if threads were switched) ---
-    const candidates = await resolveTargets(port);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId);
     for (const target of candidates) {
         try {
             const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -376,7 +321,7 @@ async function getFullLatestResponse(port, sinceSnapshot = false, includePrefixe
 }
 
 async function captureAgentScreenshot(port) {
-    const candidates = await resolveTargets(port);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId);
 
     for (const target of candidates) {
         try {
@@ -473,8 +418,8 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
 
         try {
             if (!chatClient) {
-                const raw = await resolveTargets(port);
-                const candidates = prioritizeManager(raw);
+                const raw = await cdpUtils.resolveTargets(port, preferredTargetId);
+                const candidates = raw;
                 for (const target of candidates) {
                     try {
                         const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -508,28 +453,8 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
 
             if (chatClient) {
                 const check = await chatClient.Runtime.evaluate({
-                    expression: `
-                        ${UI_LOCATORS_SCRIPT}
-                        (function() {
-                            const isGenerating = !!AG_UI.getStopButton();
-                            const editor = AG_UI.getChatInput();
-                            const isInputDisabled = editor ? (editor.getAttribute('contenteditable') === 'false' || editor.disabled) : false;
-                            const isSpinning = AG_UI.isLoading();
-                            
-                            const aaActive = !!window.__AA_BOT_OBSERVER_ACTIVE && !window.__AA_BOT_PAUSED;
-                            let hasPendingButton = false;
-                            if (aaActive) {
-                                const texts = ['run', 'accept', 'allow', 'continue', 'retry', 'çalıştır', 'kabul et', 'izin ver', 'devam et', 'yeniden dene'];
-                                const btns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
-                                hasPendingButton = btns.some(b => {
-                                    const t = (b.textContent||'').trim().toLowerCase();
-                                    return texts.some(x => t === x || t.startsWith(x + ' ') || (t.startsWith(x) && t.length <= x.length + 8));
-                                });
-                            }
-                            
-                            return { isGenerating, isSpinning, isInputDisabled, hasPendingButton };
-                        })()
-                    `,
+                    expression: `${UI_LOCATORS_SCRIPT}
+return ${AGENT_STATE_EVAL_SCRIPT};`,
                     returnByValue: true
                 });
                 
@@ -569,12 +494,12 @@ async function waitForAgentResponse(port, timeoutMs = 450000, onProgress = null)
 }
 
 async function sendViaCDP(text, port) {
-    const candidates = await resolveTargets(port);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId);
     
     // Prioritize the Manager target — its #antigravity input always belongs
     // to the active conversation. Workspace targets' side-panel inputs may
     // be stale from previously-viewed threads.
-    const sortedCandidates = prioritizeManager(candidates);
+    const sortedCandidates = candidates;
 
     const errors = [];
     for (const target of sortedCandidates) {
@@ -680,35 +605,17 @@ async function sendViaCDP(text, port) {
 }
 
 async function triggerNewChat(port) {
-    const candidates = await resolveTargets(port, false);
-
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const btn = AG_UI.getNewChatButton();
-                        if (btn && typeof btn.click === 'function') {
-                            btn.click();
-                            return { clicked: true, tag: btn.tagName };
-                        }
-                        return { clicked: false };
-                    })()
-                `, returnByValue: true
-            });
-            await client.close();
-            const val = res.result?.value;
-            if (val) {
-                console.log('[triggerNewChat] Result:', JSON.stringify(val));
-                if (val.clicked) return true;
+        const val = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const btn = AG_UI.getNewChatButton();
+            if (btn && typeof btn.click === 'function') {
+                btn.click();
+                return { clicked: true, tag: btn.tagName };
             }
-        } catch(e) {
-            console.log('[triggerNewChat] Error on target:', e.message);
-        }
+            return { clicked: false };
+        `);
+        if (val?.clicked) return true;
     }
     return false;
 }
@@ -716,143 +623,106 @@ async function triggerNewChat(port) {
 
 
 async function triggerModelMenu(port) {
-    const raw = await resolveTargets(port, false);
-    // Manager has the active conversation's model selector
-    const candidates = prioritizeManager(raw);
-
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const btn = AG_UI.getModelSelectorButton();
-                        if (btn) { btn.click(); return true; }
-                        return false;
-                    })()
-                `, returnByValue: true
-            });
-            await client.close();
-            if (res.result?.value) return true;
-        } catch(e) {}
+        const val = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const btn = AG_UI.getModelSelectorButton();
+            if (btn) { btn.click(); return true; }
+            return false;
+        `);
+        if (val) return true;
     }
     return false;
 }
 
 async function listAgentThreads(port) {
-    const raw = await resolveTargets(port, false);
+    const raw = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     const candidates = raw.filter(t => t.title === 'Manager');
     const allWorkspaces = [];
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const workspaces = [];
-                        const cards = AG_UI.getWorkspaceCards();
-                        cards.forEach(card => {
-                            const wsNameEl = card.querySelector('span.truncate');
-                            if (!wsNameEl) return;
-                            const wsName = wsNameEl.textContent.trim();
-                            
-                            const threads = [];
-                            const sibling = card.nextElementSibling;
-                            if (sibling) {
-                                const pills = AG_UI.getChatThreadPills(sibling);
-                                pills.forEach(pill => {
-                                    const name = pill.textContent.trim();
-                                    const id = pill.getAttribute('data-testid').replace('convo-pill-', '');
-                                    const row = pill.closest('[role="button"]');
-                                    let time = '';
-                                    if (row) {
-                                        const timeEl = row.querySelector('.text-xs.opacity-50');
-                                        if (timeEl) time = timeEl.textContent.trim();
-                                    }
-                                    threads.push({ name, id, time });
-                                });
-                            }
-                            if (threads.length > 0) {
-                                workspaces.push({ workspace: wsName, threads });
-                            }
-                        });
-                        return workspaces;
-                    })()
-                `,
-                returnByValue: true
+        const val = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const workspaces = [];
+            const cards = AG_UI.getWorkspaceCards();
+            cards.forEach(card => {
+                const wsNameEl = card.querySelector('span.truncate');
+                if (!wsNameEl) return;
+                const wsName = wsNameEl.textContent.trim();
+                
+                const threads = [];
+                const sibling = card.nextElementSibling;
+                if (sibling) {
+                    const pills = AG_UI.getChatThreadPills(sibling);
+                    pills.forEach(pill => {
+                        const name = pill.textContent.trim();
+                        const id = pill.getAttribute('data-testid').replace('convo-pill-', '');
+                        const row = pill.closest('[role="button"]');
+                        let time = '';
+                        if (row) {
+                            const timeEl = row.querySelector('.text-xs.opacity-50');
+                            if (timeEl) time = timeEl.textContent.trim();
+                        }
+                        threads.push({ name, id, time });
+                    });
+                }
+                if (threads.length > 0) {
+                    workspaces.push({ workspace: wsName, threads });
+                }
             });
-            await client.close();
-            if (res.result?.value && res.result.value.length > 0) {
-                // Add new workspaces, merging threads if workspace already exists
-                res.result.value.forEach(newWs => {
-                    const existingWs = allWorkspaces.find(ws => ws.workspace === newWs.workspace);
-                    if (existingWs) {
-                        newWs.threads.forEach(newT => {
-                            if (!existingWs.threads.some(t => t.id === newT.id)) {
-                                existingWs.threads.push(newT);
-                            }
-                        });
-                    } else {
-                        allWorkspaces.push(newWs);
-                    }
-                });
-            }
-        } catch(e) { console.debug(`[listAgentThreads] target error: ${e.message}`); }
+            return workspaces;
+        `);
+        
+        if (val && val.length > 0) {
+            val.forEach(newWs => {
+                const existingWs = allWorkspaces.find(ws => ws.workspace === newWs.workspace);
+                if (existingWs) {
+                    newWs.threads.forEach(newT => {
+                        if (!existingWs.threads.some(t => t.id === newT.id)) existingWs.threads.push(newT);
+                    });
+                } else {
+                    allWorkspaces.push(newWs);
+                }
+            });
+        }
     }
     return allWorkspaces;
 }
 
 async function switchAgentThread(port, threadId) {
-    const raw = await resolveTargets(port, false);
+    const raw = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     const candidates = raw.filter(t => t.title === 'Manager');
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const res = await Runtime.evaluate({
-                expression: `
-                    (() => {
-                        const pill = document.querySelector('[data-testid="convo-pill-' + ${JSON.stringify(threadId)} + '"]');
-                        if (pill) {
-                            const btn = pill.closest('[role="button"]');
-                            if (btn && typeof btn.click === 'function') {
-                                btn.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    })()
-                `,
-                returnByValue: true
-            });
-            await client.close();
-            if (res.result?.value) {
-                // Manually bump the mtime of the thread's log file so getActiveThreadId picks it up instantly
-                try {
-                    const os = require('os');
-                    const path = require('path');
-                    const fs = require('fs');
-                    const logPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId, '.system_generated', 'logs', 'overview.txt');
-                    const time = new Date();
-                    if (fs.existsSync(logPath)) {
-                        fs.utimesSync(logPath, time, time);
-                    } else {
-                        const dirPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId);
-                        if (fs.existsSync(dirPath)) fs.utimesSync(dirPath, time, time);
+        const val = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const pills = AG_UI.getChatThreadPills();
+            for (let el of pills) {
+                if (el.getAttribute('data-testid') === 'convo-pill-' + '${threadId}') {
+                    const row = el.closest('[role="button"]');
+                    if (row) {
+                        row.click();
+                        return true;
                     }
-                } catch(err) {
-                    console.debug('[switchAgentThread] failed to bump mtime:', err.message);
                 }
-                return true;
             }
-        } catch(e) { console.debug(`[switchAgentThread] target error: ${e.message}`); }
+            return false;
+        `);
+        
+        if (val) {
+            try {
+                const os = require('os');
+                const path = require('path');
+                const fs = require('fs');
+                const logPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId, '.system_generated', 'logs', 'overview.txt');
+                const time = new Date();
+                if (fs.existsSync(logPath)) {
+                    fs.utimesSync(logPath, time, time);
+                } else {
+                    const dirPath = path.join(os.homedir(), '.gemini', 'antigravity', 'brain', threadId);
+                    if (fs.existsSync(dirPath)) fs.utimesSync(dirPath, time, time);
+                }
+            } catch(err) {
+                console.debug('[switchAgentThread] failed to bump mtime:', err.message);
+            }
+            return true;
+        }
     }
     return false;
 }
@@ -889,50 +759,16 @@ async function getActiveThreadId(port) {
     return null;
 }
 async function isAgentWorking(port) {
-    const raw = await resolveTargets(port, false);
-    // Manager has the active conversation — check it first
-    const candidates = prioritizeManager(raw);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-            const check = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (function() {
-                        const isGenerating = !!AG_UI.getStopButton();
-                        const editor = AG_UI.getChatInput();
-                        const isInputDisabled = editor ? (editor.getAttribute('contenteditable') === 'false' || editor.disabled) : false;
-                        const isSpinning = AG_UI.isLoading();
-                        
-                        const aaActive = !!window.__AA_BOT_OBSERVER_ACTIVE && !window.__AA_BOT_PAUSED;
-                        let hasPendingButton = false;
-                        if (aaActive) {
-                            const texts = ['run', 'accept', 'allow', 'continue', 'retry', 'çalıştır', 'kabul et', 'izin ver', 'devam et', 'yeniden dene'];
-                            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
-                            hasPendingButton = btns.some(b => {
-                                const t = (b.textContent||'').trim().toLowerCase();
-                                return texts.some(x => t === x || t.startsWith(x + ' ') || (t.startsWith(x) && t.length <= x.length + 8));
-                            });
-                        }
-                        
-                        return isGenerating || isInputDisabled || isSpinning || hasPendingButton;
-                    })()
-                `,
-                returnByValue: true
-            });
-            await client.close();
-            if (check && check.result && check.result.value !== undefined) {
-                return check.result.value;
-            }
-        } catch(e) { console.debug(`[isAgentWorking] target error: ${e.message}`); }
+        const check = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `return ${AGENT_STATE_EVAL_SCRIPT};`);
+        if (check) return check;
     }
     return false;
 }
 
 async function getCurrentModel(port) {
-    const candidates = await resolveTargets(port, false);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
         try {
             const client = await CDP({ target: target.webSocketDebuggerUrl });
@@ -972,8 +808,7 @@ module.exports = {
     getCurrentModel,
     stopAgent,
     getQuota,
-    resolveTargets,
-    listWindows,
+        listWindows,
     setPreferredWindow,
     getPreferredWindow,
     getCachedWindows,
@@ -984,7 +819,7 @@ module.exports = {
 };
 
 async function captureFullIDEScreenshot(port) {
-    const candidates = await resolveTargets(port);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId);
 
     for (const target of candidates) {
         try {
@@ -1006,170 +841,89 @@ async function captureFullIDEScreenshot(port) {
 }
 
 async function getAvailableModels(port) {
-    const raw = await resolveTargets(port, false);
-    // Manager has the active conversation's model selector
-    const candidates = prioritizeManager(raw);
-
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
+        // Step 1: Open dropdown
+        await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const btn = AG_UI.getModelSelectorButton();
+            if (btn) btn.click();
+        `);
+        await new Promise(r => setTimeout(r, 500));
 
-            // Önce model menüsünü aç
-            await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const btn = AG_UI.getModelSelectorButton();
-                        if (btn) { btn.click(); return true; }
-                        return false;
-                    })()
-                `, returnByValue: true
+        // Step 2: Read models
+        const models = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const models = [];
+            const items = AG_UI.getModelOptions();
+            items.forEach(el => {
+                if (el.offsetParent) {
+                    const t = el.textContent.trim().split('\n')[0].trim();
+                    if (t.length > 2 && t.length < 80) models.push(t);
+                }
             });
-
-            // Dropdown'un açılmasını bekle
-            await new Promise(r => setTimeout(r, 500));
-
-            // Model listesini oku
-            const res = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const models = [];
-                        const items = AG_UI.getModelOptions();
-                        items.forEach(el => {
-                            if (el.offsetParent) {
-                                const t = el.textContent.trim().split('\\n')[0].trim();
-                                if (t.length > 2 && t.length < 80) models.push(t);
-                            }
-                        });
-                        return models;
-                    })()
-                `, returnByValue: true
-            });
-
-            await client.close();
-            return res.result?.value || [];
-        } catch(e) {}
+            return models;
+        `);
+        if (models && models.length > 0) return models;
     }
     return [];
 }
 
 async function selectModel(port, modelName) {
-    const raw = await resolveTargets(port, false);
-    // Manager has the active conversation's model selector
-    const candidates = prioritizeManager(raw);
-
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-
-            // Step 1: Check if dropdown is already open, if not click the model selector button
-            const openRes = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        // Check if model dropdown is already open by looking for model option buttons
-                        const existingOptions = AG_UI.getModelOptions().filter(el => el.offsetParent !== null);
-                        if (existingOptions.length > 3) return { alreadyOpen: true };
-                        
-                        // Click the model selector button to open dropdown
-                        const selectorBtn = AG_UI.getModelSelectorButton();
-                        if (selectorBtn) {
-                            selectorBtn.click();
-                            return { clicked: true };
-                        }
-                        return { clicked: false };
-                    })()
-                `, returnByValue: true
-            });
-
-            const openVal = openRes.result?.value;
-            if (!openVal || (!openVal.clicked && !openVal.alreadyOpen)) {
-                await client.close();
-                continue;
+        // Step 1: Open dropdown if not already open
+        const openVal = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const existingOptions = AG_UI.getModelOptions().filter(el => el.offsetParent !== null);
+            if (existingOptions.length > 3) return { alreadyOpen: true };
+            const selectorBtn = AG_UI.getModelSelectorButton();
+            if (selectorBtn) {
+                selectorBtn.click();
+                return { clicked: true };
             }
+            return { clicked: false };
+        `);
+        
+        if (!openVal || (!openVal.clicked && !openVal.alreadyOpen)) continue;
 
-            // Step 2: Wait for dropdown to render
-            await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 600));
 
-            // Step 3: Find and click the matching model in the dropdown
-            const selectRes = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const targetModel = ${JSON.stringify(modelName)}.toLowerCase();
-                        const modelOptions = AG_UI.getModelOptions().filter(el => el.offsetParent !== null);
-                        
-                        // Try exact match first
-                        let match = modelOptions.find(b => {
-                            const text = b.textContent.replace(/New$/i, '').trim().toLowerCase();
-                            return text === targetModel;
-                        });
-                        
-                        // Try partial/includes match
-                        if (!match) {
-                            match = modelOptions.find(b => {
-                                const text = b.textContent.replace(/New$/i, '').trim().toLowerCase();
-                                return text.includes(targetModel) || targetModel.includes(text);
-                            });
-                        }
-                        
-                        if (match) {
-                            // Check if already selected (has bg-gray-500/20 without hover)
-                            const isAlreadySelected = match.className.includes('bg-gray-500/20') && !match.className.includes('hover:bg-gray-500/20');
-                            match.click();
-                            return { 
-                                selected: true, 
-                                modelText: match.textContent.trim(),
-                                wasAlreadySelected: isAlreadySelected
-                            };
-                        }
-                        
-                        // Return available models for debugging
-                        const available = modelOptions.map(b => b.textContent.replace(/New$/i, '').trim());
-                        return { selected: false, available };
-                    })()
-                `, returnByValue: true
-            });
-
-            await client.close();
-            const selectVal = selectRes.result?.value;
-            if (selectVal?.selected) return true;
-        } catch(e) {}
+        // Step 2: Select model
+        const selectRes = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const targetModel = ${JSON.stringify(modelName)}.toLowerCase();
+            const modelOptions = AG_UI.getModelOptions().filter(el => el.offsetParent !== null);
+            
+            let match = modelOptions.find(b => b.textContent.replace(/New$/i, '').trim().toLowerCase() === targetModel);
+            if (!match) {
+                match = modelOptions.find(b => {
+                    const text = b.textContent.replace(/New$/i, '').trim().toLowerCase();
+                    return text.includes(targetModel) || targetModel.includes(text);
+                });
+            }
+            
+            if (match) {
+                const isAlreadySelected = match.className.includes('bg-gray-500/20') && !match.className.includes('hover:bg-gray-500/20');
+                match.click();
+                return { selected: true, modelText: match.textContent.trim(), wasAlreadySelected: isAlreadySelected };
+            }
+            return { selected: false };
+        `);
+        
+        if (selectRes?.selected) return selectRes;
     }
     return false;
 }
 
 async function stopAgent(port) {
-    const candidates = await resolveTargets(port, false);
-
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
-        try {
-            const client = await CDP({ target: target.webSocketDebuggerUrl });
-            const { Runtime } = client;
-            await Runtime.enable();
-
-            const res = await Runtime.evaluate({
-                expression: `
-                    ${UI_LOCATORS_SCRIPT}
-                    (() => {
-                        const btn = AG_UI.getStopButton();
-                        if (btn) {
-                            btn.click();
-                            return { stopped: true };
-                        }
-                        return { stopped: false };
-                    })()
-                `, returnByValue: true
-            });
-
-            await client.close();
-            return res.result?.value?.stopped || false;
-        } catch(e) {}
+        const val = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `
+            const btn = AG_UI.getStopButton();
+            if (btn) {
+                btn.click();
+                return { stopped: true };
+            }
+            return { stopped: false };
+        `);
+        if (val?.stopped) return true;
     }
     return false;
 }
@@ -1358,7 +1112,7 @@ async function getQuota(_port, t) {
 }
 
 async function closeWindow(port) {
-    const candidates = await resolveTargets(port, false);
+    const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     if (candidates.length === 0) return false;
 
     const target = candidates[0]; // first candidate is the preferred window if set
