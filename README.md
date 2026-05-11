@@ -29,6 +29,10 @@ Send messages, switch AI models, manage workspaces, take screenshots — all fro
 | ⌨️ **Typing Indicator** | Shows "typing..." instead of spamming progress messages |
 | 🖥️ **Cross-Platform** | Works on Linux, macOS (Intel), and Windows |
 
+## 📖 Documentation
+
+For a deeper dive into the system architecture, how the auto-accept state machine works, and a full command reference, please see our **[Wiki](./wiki/Home.md)**!
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -107,21 +111,23 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 | Command | Description |
 |---|---|
 | *(any text)* | Send directly to the AI agent |
-| `/latest` | Get the latest agent response |
-| `/screenshot` | Take an IDE screenshot |
-| `/status` | System status (IDE, CDP, Bot) |
+| `/latest` /l | Get the latest agent response |
+| `/screenshot` /ss | Take an IDE screenshot |
+| `/status` /s | System status (IDE, CDP, Bot) |
 | `/start_ide` | Start the IDE remotely |
 | `/close` | Fully close the IDE |
 | `/new` | Open a new chat session |
-| `/model` | Switch AI model |
+| `/agents` /a | List and switch recent chat threads |
+| `/artifacts` /af | List and download artifacts from the current thread |
+| `/model` /m | Switch AI model |
 | `/workspace` | Switch project workspace |
 | `/window` | Select specific IDE window (multi-window support) |
 | `/file` | Browse & download project files |
 | `/quota` | Check AI credits and model usage limits |
-| `/autoaccept` | Toggle auto-accept (on/off/status) |
+| `/autoaccept` /aa | Toggle auto-accept (on/off/status) |
 | `/lang` | Switch language (EN/TR) |
 | `/stop` | Stop the running agent |
-| `/menu` | Update Telegram command menu |
+| `/help` /h | Show the Telegram quick-reference menu |
 
 ## 🏗️ Architecture
 
