@@ -184,11 +184,23 @@ const UI_LOCATORS_SCRIPT = `
 
 const AGENT_STATE_EVAL_SCRIPT = `
     (function() {
-        return {
-            isGenerating: AG_UI.isLoading(),
-            isSpinning: !!document.querySelector('.animate-spin, .codicon-loading'),
-            hasPendingButton: !!document.querySelector('button.bg-blue-600')
-        };
+        const isGenerating = !!AG_UI.getStopButton();
+        const editor = AG_UI.getChatInput();
+        const isInputDisabled = editor ? (editor.getAttribute('contenteditable') === 'false' || editor.disabled) : false;
+        const isSpinning = AG_UI.isLoading();
+        
+        const aaActive = !!window.__AA_BOT_OBSERVER_ACTIVE && !window.__AA_BOT_PAUSED;
+        let hasPendingButton = false;
+        if (aaActive) {
+            const texts = ['run', 'accept', 'allow', 'continue', 'retry', 'çalıştır', 'kabul et', 'izin ver', 'devam et', 'yeniden dene'];
+            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
+            hasPendingButton = btns.some(b => {
+                const t = (b.textContent||'').trim().toLowerCase();
+                return texts.some(x => t === x || t.startsWith(x + ' ') || (t.startsWith(x) && t.length <= x.length + 8));
+            });
+        }
+        
+        return { isGenerating, isSpinning, isInputDisabled, hasPendingButton };
     })()
 `;
 

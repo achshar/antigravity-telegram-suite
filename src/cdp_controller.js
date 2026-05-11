@@ -762,7 +762,9 @@ async function isAgentWorking(port) {
     const candidates = await cdpUtils.resolveTargets(port, preferredTargetId, false);
     for (const target of candidates) {
         const check = await cdpUtils.evaluateInTarget(target.webSocketDebuggerUrl, UI_LOCATORS_SCRIPT, `return ${AGENT_STATE_EVAL_SCRIPT};`);
-        if (check) return check;
+        if (check) {
+            return check.isGenerating || check.isInputDisabled || check.isSpinning || check.hasPendingButton;
+        }
     }
     return false;
 }
