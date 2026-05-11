@@ -19,9 +19,14 @@ This is the core engine of the bot. It connects to the headless browser running 
 - **Session Management**: Lists and switches between different workspaces and active threads.
 
 ### 3. DOM Manipulation (`src/ui_locators.js`)
-Since the agent's IDE is a complex React application, `ui_locators.js` provides a stable abstraction layer over the raw HTML. It exposes methods like `AG_UI.getChatInput()` or `AG_UI.getVisibleChatContainer()` so that the CDP controller doesn't break every time the CSS classes change.
+Since the agent's IDE is a complex React application, `ui_locators.js` provides a stable abstraction layer over the raw HTML. It exposes methods like `AG_UI.getChatInput()` or `AG_UI.getVisibleChatContainer()` and strings like `AGENT_STATE_EVAL_SCRIPT` so that the CDP controller doesn't break every time the CSS classes change.
 
-### 4. Platform and System (`src/platform.js`)
+### 4. CDP Utilities (`src/utils/cdp_utils.js`)
+Handles low-level connections to the browser.
+- Provides `evaluateInTarget` to abstract away `CDP()` target connection, `Runtime` enabling, and client teardown boilerplate.
+- Contains `resolveTargets` to automatically find and filter the correct active IDE tabs out of the many running instances.
+
+### 5. Platform and System (`src/platform.js`)
 Handles native OS operations.
 - Process management (finding and killing zombie IDE processes).
 - Bootstrapping the Chrome instance with the correct debugging flags.
