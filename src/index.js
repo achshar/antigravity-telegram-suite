@@ -4,9 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
+const { getArtifactDisplayInfo } = require('./utils/artifact_utils');
 const { loadLocale, t, getLang } = require('./i18n');
 const { config, isIDERunning, killIDE, cleanLockFile, launchIDE, trustWorkspaceViaCDP, PLATFORM } = require('./platform');
-const { isAgentWorking, getFullLatestResponse, snapshotChatState, captureAgentScreenshot, captureFullIDEScreenshot, waitForAgentResponse, sendViaCDP, triggerNewChat, triggerModelMenu, getAvailableModels, selectModel, getCurrentModel, stopAgent, getQuota, listWindows, setPreferredWindow, getPreferredWindow, getCachedWindows, closeWindow, listAgentThreads, switchAgentThread, getActiveThreadId } = require('./cdp_controller');
+const { isAgentWorking, getFullLatestResponse, snapshotChatState, captureAgentScreenshot, captureFullIDEScreenshot, waitForAgentResponse, sendViaCDP, triggerNewChat, triggerModelMenu, getAvailableModels, selectModel, getCurrentModel, stopAgent, getQuota, listWindows, setPreferredWindow, getPreferredWindow, getCachedWindows, closeWindow, listAgentThreads, switchAgentThread, getActiveThreadId, getArtifacts } = require('./cdp_controller');
 const autoaccept = require('./autoaccept');
 
 let cachedAgentThreads = [];
@@ -36,6 +37,10 @@ const CDP_PORT = process.env.DEBUGGING_PORT || 9333;
 
 function markdownToTelegramHtml(text) {
     let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html = html.replace(/(?:^&gt;[ \t]?.*\n?)+/gm, (match) => {
+        const content = match.replace(/^&gt;[ \t]?/gm, '');
+        return '<blockquote>' + content.trim() + '</blockquote>\n';
+    });
     html = html.replace(/^(#{1,6})\s+(.+)$/gm, '<b>$2</b>');
     html = html.replace(/\*\*([^\*]+)\*\*/g, '<b>$1</b>');
     html = html.replace(/(?<![A-Za-z0-9])\*([^\*]+)\*(?![A-Za-z0-9])/g, '<i>$1</i>');
@@ -160,7 +165,7 @@ bot.start((ctx) => {
     ctx.reply(t('bot.started', { chatId: ctx.chat.id }));
 });
 
-bot.help((ctx) => {
+bot.command(['help', 'h'], (ctx) => {
     const helpMessage = `
 ${t('help.title')}
 
@@ -222,14 +227,15 @@ bot.command('close_window', async (ctx) => {
     }
 });
 
-bot.command('status', async (ctx) => {
+bot.command(['status', 's'], async (ctx) => {
     let msg = t('status.title') + '\n';
     
     const ideCheck = await isIDERunning();
     msg += ideCheck ? t('status.ide_running') + '\n' : t('status.ide_stopped') + '\n';
     
     try {
-        await getActiveThreadId(CDP_PORT);
+        const { resolveTargets } = require('./cdp_controller');
+        await resolveTargets(CDP_PORT, false);
         msg += t('status.cdp_active') + '\n';
     } catch {
         msg += t('status.cdp_inactive') + '\n';
@@ -240,7 +246,7 @@ bot.command('status', async (ctx) => {
     try {
         const activeId = await getActiveThreadId(CDP_PORT);
         if (activeId) {
-            const workspaces = await listAgentThreads(CDP_PORT);
+            const workspaces = await listAgentThreads(CDP_PORT).catch(() => []);
             let activeWorkspace = null;
             let activeThread = null;
             
@@ -257,11 +263,13 @@ bot.command('status', async (ctx) => {
                 msg += `\n💬 <b>Chat:</b>\n`;
                 msg += `- Workspace: ${activeWorkspace}\n`;
                 msg += `- Thread: ${activeThread}\n`;
-                const currentModel = await getCurrentModel(CDP_PORT);
+                const currentModel = await getCurrentModel(CDP_PORT).catch(() => null);
                 if (currentModel) msg += `- Model: ${currentModel}\n`;
-                const isWorking = await isAgentWorking(CDP_PORT);
-                msg += `- Status: ${isWorking ? 'Working...' : 'Idle'}\n`;
+            } else {
+                msg += `\n💬 <b>Chat:</b>\n- ID: ${activeId}\n`;
             }
+            const isWorking = await isAgentWorking(CDP_PORT).catch(() => false);
+            msg += `- Status: ${isWorking ? 'Working...' : 'Idle'}\n`;
         }
     } catch (e) {
         // silently fail if we can't get chat info
@@ -294,19 +302,18 @@ async function appendThreadFooter(text) {
     return text;
 }
 
-bot.command('latest', async (ctx) => {
+bot.command(['latest', 'l'], async (ctx) => {
     try {
-        let text = await getFullLatestResponse(CDP_PORT);
+        let text = await getFullLatestResponse(CDP_PORT, false, true);
         text = await appendThreadFooter(text);
-        await sendLongMessage(ctx, text, t('latest.title'));
+        await sendLongMessage(ctx, text);
     } catch (err) {
         ctx.reply(t('latest.error', { error: err.message }));
     }
 });
 
-bot.command('screenshot', async (ctx) => {
+bot.command(['screenshot', 'ss'], async (ctx) => {
     try {
-        ctx.reply(t('screenshot.taking'));
         const buffer = await captureFullIDEScreenshot(CDP_PORT);
         await ctx.replyWithPhoto({ source: buffer });
     } catch (err) {
@@ -338,7 +345,6 @@ bot.command('ask', (ctx) => {
     (async () => {
         try {
             await sendViaCDP(query, CDP_PORT);
-            await ctx.reply(t('ask.sent'));
 
             // Wait briefly for message to render in DOM before anchoring state
             await new Promise(r => setTimeout(r, 1500));
@@ -346,11 +352,10 @@ bot.command('ask', (ctx) => {
             
             const isDone = await waitForAgentResponse(CDP_PORT, 450000, createProgressHandler(ctx));
             if (isDone) {
-                let text = await getFullLatestResponse(CDP_PORT);
+                let text = await getFullLatestResponse(CDP_PORT, true);
                 text = stripQueryFromResponse(text, query);
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
-                await sendLongMessage(ctx, text, t('ask.done'));
+                await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
             }
@@ -364,20 +369,33 @@ bot.command('ask', (ctx) => {
 bot.command('cmd', async (ctx) => {
     const cmdStr = ctx.message.text.split(' ').slice(1).join(' ');
     if (!cmdStr) {
-        return ctx.reply('Lütfen çalıştırılacak komutu girin. Örnek: /cmd ls -la');
+        return ctx.reply('Please enter a command to run. Example: /cmd ls -la');
     }
     
-    ctx.reply(`⏳ Komut çalıştırılıyor:\n\`${cmdStr}\``, { parse_mode: 'MarkdownV2' });
+    // Intercept 'cd' to maintain directory state across commands
+    if (cmdStr.startsWith('cd ') || cmdStr === 'cd') {
+        const targetDir = cmdStr.split(' ')[1] || config.projectsDir;
+        const resolvedDir = path.resolve(currentWorkspaceDir, targetDir);
+        
+        if (fs.existsSync(resolvedDir) && fs.statSync(resolvedDir).isDirectory()) {
+            currentWorkspaceDir = resolvedDir;
+            return ctx.reply(`✅ Working directory changed to:\n\`${currentWorkspaceDir}\``, { parse_mode: 'MarkdownV2' });
+        } else {
+            return ctx.reply(`❌ Directory not found:\n\`${resolvedDir}\``, { parse_mode: 'MarkdownV2' });
+        }
+    }
     
-    exec(cmdStr, { timeout: 60000, maxBuffer: 1024 * 1024 * 5 }, async (error, stdout, stderr) => {
+    ctx.reply(`⏳ Running command in \`${currentWorkspaceDir}\`:\n\`${cmdStr}\``, { parse_mode: 'MarkdownV2' });
+    
+    exec(cmdStr, { cwd: currentWorkspaceDir, timeout: 60000, maxBuffer: 1024 * 1024 * 5 }, async (error, stdout, stderr) => {
         let output = "";
         if (stdout) output += `[STDOUT]\n${stdout}\n`;
         if (stderr) output += `[STDERR]\n${stderr}\n`;
         if (error) output += `[ERROR]\n${error.message}\n`;
         
-        if (!output) output = "✅ Komut başarıyla çalıştı (Çıktı yok).";
+        if (!output) output = "✅ Command executed successfully (No output).";
         
-        await sendLongMessage(ctx, output, `💻 Komut Çıktısı:`);
+        await sendLongMessage(ctx, output, `💻 Command Output:`);
     });
 });
 
@@ -408,7 +426,7 @@ bot.command('new', async (ctx) => {
     }
 });
 
-bot.command('agents', async (ctx) => {
+bot.command(['agents', 'a'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     const num = parseInt(parts[1], 10);
     
@@ -451,7 +469,7 @@ bot.command('agents', async (ctx) => {
                 msg += `<b>📁 ${ws.workspace}</b>\n`;
                 for (const th of recentThreads) {
                     cachedAgentThreads.push(th);
-                    msg += `  /agents_${index} - ${th.name} <i>(${th.time})</i>\n`;
+                    msg += `• /a${index} - ${th.name} <i>(${th.time})</i>\n`;
                     index++;
                 }
                 msg += '\n';
@@ -468,7 +486,7 @@ bot.command('agents', async (ctx) => {
     }
 });
 
-bot.hears(/^\/agents_(\d+)$/, async (ctx) => {
+bot.hears(/^\/a(\d+)$/, async (ctx) => {
     const num = parseInt(ctx.match[1], 10);
     if (num > 0 && num <= cachedAgentThreads.length) {
         const thread = cachedAgentThreads[num - 1];
@@ -482,7 +500,7 @@ bot.hears(/^\/agents_(\d+)$/, async (ctx) => {
     }
 });
 
-bot.command('artifacts', async (ctx) => {
+bot.command(['artifacts', 'af'], async (ctx) => {
     try {
         const activeId = await getActiveThreadId(CDP_PORT);
         if (!activeId) {
@@ -523,30 +541,21 @@ bot.command('artifacts', async (ctx) => {
             return ctx.reply(t('artifacts.no_artifacts') || 'ℹ️ No artifacts found for the current thread.');
         }
 
-        let msg = t('artifacts.list_title') || '📎 <b>Artifacts for Current Thread:</b>\\n\\n';
+        let wsName = 'Unknown';
+        let threadName = 'Current Thread';
+        try {
+            const workspaces = await listAgentThreads(CDP_PORT);
+            for (const ws of workspaces) {
+                const found = ws.threads.find(t => t.id === activeId);
+                if (found) { wsName = ws.workspace; threadName = found.name; break; }
+            }
+        } catch (_) {}
+
+        let msg = t('artifacts.list_title', { title: `${wsName} / ${threadName}` }) || `📎 <b>Artifacts for ${wsName} / ${threadName}:</b>\n\n`;
         for (let i = 0; i < cachedArtifacts.length; i++) {
             const filename = cachedArtifacts[i].name;
-            let displayName = filename;
-            if (filename.startsWith('media__')) {
-                const match = filename.match(/media__(\d+)\.\w+/);
-                if (match) {
-                    const date = new Date(parseInt(match[1], 10));
-                    const today = new Date();
-                    const yesterday = new Date(today);
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    
-                    let dateStr = '';
-                    if (date.toDateString() === today.toDateString()) dateStr = 'Today';
-                    else if (date.toDateString() === yesterday.toDateString()) dateStr = 'Yesterday';
-                    else dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                    
-                    const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                    displayName = `Media (${dateStr} ${timeStr})`;
-                }
-            } else {
-                displayName = filename.replace(/\.[^/.]+$/, "").replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-            }
-            msg += `/artifact_${i + 1} - ${displayName}\n`;
+            const { displayName, icon } = getArtifactDisplayInfo(filename, cachedArtifacts[i].path);
+            msg += `• ${icon} /af${i + 1} - ${displayName}\n`;
         }
         
         ctx.reply(msg, { parse_mode: 'HTML' });
@@ -555,23 +564,59 @@ bot.command('artifacts', async (ctx) => {
     }
 });
 
-bot.hears(/^\/artifact_(\d+)$/, async (ctx) => {
+bot.hears(/^\/af(\d+)$/, async (ctx) => {
     const num = parseInt(ctx.match[1], 10);
+    
+    // Auto-refresh cache if the bot restarted or new artifacts pushed the index out of bounds
+    if (num > cachedArtifacts.length) {
+        const activeId = getActiveThreadId();
+        if (activeId) {
+            cachedArtifacts = getArtifacts(activeId);
+        }
+    }
+
     if (num > 0 && num <= cachedArtifacts.length) {
         const artifact = cachedArtifacts[num - 1];
-        ctx.reply((t('artifacts.sending', { name: artifact.name }) || `📤 Sending artifact: <b>${artifact.name}</b>...`), { parse_mode: 'HTML' });
+        const { displayName, icon, isAnimated, ext } = getArtifactDisplayInfo(artifact.name, artifact.path);
         
-        const ext = path.extname(artifact.name).toLowerCase();
         try {
-            if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp') {
-                await ctx.replyWithPhoto({ source: artifact.path });
+            if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
+                await ctx.replyWithPhoto({ source: artifact.path, filename: displayName + ext }, { caption: displayName + ext });
+            } else if (ext === '.webp') {
+                const { execSync } = require('child_process');
+                
+                if (!isAnimated) {
+                    // It's a static WebP image
+                    await ctx.replyWithPhoto({ source: artifact.path, filename: displayName + '.webp' }, { caption: displayName + '.webp' });
+                } else {
+                    // It's an animated WebP
+                    const mp4Path = artifact.path.replace(/\.webp$/i, '.mp4');
+                    if (!fs.existsSync(mp4Path)) {
+                        try {
+                            execSync(`ffmpeg -y -i "${artifact.path}" -vcodec libx264 -pix_fmt yuv420p "${mp4Path}"`);
+                        } catch (err) {
+                            console.error('FFmpeg conversion failed:', err.message);
+                        }
+                    }
+                    if (fs.existsSync(mp4Path)) {
+                        const stats = fs.statSync(mp4Path);
+                        if (stats.size > 1024) { // Ensure it's not an empty/broken file
+                            await ctx.replyWithVideo({ source: mp4Path, filename: displayName + '.mp4' }, { caption: displayName + '.mp4' });
+                        } else {
+                            await ctx.replyWithDocument({ source: artifact.path, filename: displayName + '.webp' }, { caption: displayName + '.webp' });
+                        }
+                        try { fs.unlinkSync(mp4Path); } catch(e) { console.error('Cleanup failed:', e.message); }
+                    } else {
+                        await ctx.replyWithDocument({ source: artifact.path, filename: displayName + '.webp' }, { caption: displayName + '.webp' });
+                    }
+                }
             } else if (ext === '.mp4' || ext === '.mov') {
-                await ctx.replyWithVideo({ source: artifact.path });
+                await ctx.replyWithVideo({ source: artifact.path, filename: displayName + ext }, { caption: displayName + ext });
             } else if (ext === '.md') {
                 const content = fs.readFileSync(artifact.path, 'utf8');
                 await sendLongMessage(ctx, content);
             } else {
-                await ctx.replyWithDocument({ source: artifact.path });
+                await ctx.replyWithDocument({ source: artifact.path, filename: displayName + ext });
             }
         } catch (e) {
             ctx.reply((t('artifacts.error') || '❌ Error: ') + e.message);
@@ -581,7 +626,7 @@ bot.hears(/^\/artifact_(\d+)$/, async (ctx) => {
     }
 });
 
-bot.command('model', async (ctx) => {
+bot.command(['model', 'm'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     parts.shift();
     const modelName = parts.join(' ').trim();
@@ -632,7 +677,7 @@ bot.action(/md_(.+)/, async (ctx) => {
 
 // ===== AUTO-ACCEPT =====
 
-bot.command('autoaccept', async (ctx) => {
+bot.command(['autoaccept', 'aa'], async (ctx) => {
     const parts = ctx.message.text.split(' ');
     parts.shift();
     const subCommand = parts.join(' ').trim().toLowerCase();
@@ -1210,7 +1255,6 @@ bot.on('text', (ctx) => {
     (async () => {
         try {
             await sendViaCDP(query, CDP_PORT);
-            await ctx.reply(t('ask.sent'));
 
             // Wait briefly for message to render in DOM before anchoring state
             await new Promise(r => setTimeout(r, 1500));
@@ -1221,8 +1265,7 @@ bot.on('text', (ctx) => {
                 let text = await getFullLatestResponse(CDP_PORT);
                 text = stripQueryFromResponse(text, query);
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
-                await sendLongMessage(ctx, text, t('ask.done'));
+                await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
             }
@@ -1270,7 +1313,6 @@ bot.on(['photo', 'document'], (ctx) => {
             const caption = ctx.message.caption ? `\nUser's message: ${ctx.message.caption}` : "";
             const query = `[System: The user has uploaded an image or file. You MUST use your \`view_file\` tool to examine the file at this absolute path: ${dest} . Do not say you cannot see it. Use the tool!]${caption}`;
             
-            await ctx.reply(t('photo.downloaded'));
             await sendViaCDP(query, CDP_PORT);
 
             // Wait briefly for message to render in DOM before anchoring state
@@ -1285,8 +1327,7 @@ bot.on(['photo', 'document'], (ctx) => {
                     text = stripQueryFromResponse(text, caption);
                 }
                 if (!text) text = t('ask.done_empty');
-                text = await appendThreadFooter(text);
-                await sendLongMessage(ctx, text, t('ask.done'));
+                await sendLongMessage(ctx, text);
             } else {
                 await ctx.reply(t('ask.timeout'));
             }
