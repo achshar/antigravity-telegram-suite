@@ -234,7 +234,7 @@ bot.command(['status', 's'], async (ctx) => {
     msg += ideCheck ? t('status.ide_running') + '\n' : t('status.ide_stopped') + '\n';
     
     try {
-        const { resolveTargets } = require('./cdp_controller');
+        const { resolveTargets } = require('./utils/cdp_utils');
         await resolveTargets(CDP_PORT, false);
         msg += t('status.cdp_active') + '\n';
     } catch {

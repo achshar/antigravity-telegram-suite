@@ -182,4 +182,14 @@ const UI_LOCATORS_SCRIPT = `
     };
 `;
 
-module.exports = { UI_LOCATORS_SCRIPT };
+const AGENT_STATE_EVAL_SCRIPT = `
+    (function() {
+        return {
+            isGenerating: AG_UI.isLoading(),
+            isSpinning: !!document.querySelector('.animate-spin, .codicon-loading'),
+            hasPendingButton: !!document.querySelector('button.bg-blue-600')
+        };
+    })()
+`;
+
+module.exports = { UI_LOCATORS_SCRIPT, AGENT_STATE_EVAL_SCRIPT };
