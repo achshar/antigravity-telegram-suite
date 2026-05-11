@@ -21,10 +21,13 @@ Send messages, switch AI models, manage workspaces, take screenshots — all fro
 | 💬 **Headless Chat** | Send messages directly to the AI agent via Telegram |
 | 📎 **File & Image Upload** | Forward files/images to the agent with captions |
 | 📸 **IDE Screenshots** | Capture and receive IDE screenshots remotely |
+| 📦 **Artifact Rendering** | Receive generated images, WebP animations, and artifacts natively |
 | 🤖 **Model Switching** | Change AI models (Gemini, Claude) with inline buttons |
+| 🧠 **Agent Threading** | Navigate and switch between different agent conversations |
 | 📂 **File Explorer** | Browse, navigate, and download project files |
 | 🔄 **Workspace Management** | Switch between projects without touching the keyboard |
 | ⚡ **Auto-Accept** | Automatically click Run, Accept, Allow, Continue buttons |
+| 📊 **Quota Monitoring** | Check your remaining AI credits and model usage limits |
 | 🌐 **Multi-Language** | English and Turkish UI (extensible) |
 | ⌨️ **Typing Indicator** | Shows "typing..." instead of spamming progress messages |
 | 🖥️ **Cross-Platform** | Works on Linux, macOS (Intel), and Windows |
