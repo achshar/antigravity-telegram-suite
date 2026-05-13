@@ -56,7 +56,7 @@ function httpGet(url) {
     });
 }
 
-const { resolveTargets } = require('./cdp_controller');
+const { resolveTargets } = require('./utils/cdp_utils');
 
 // ─── Build DOM Observer Script ────────────────────────────────────────
 function buildObserverScript() {
