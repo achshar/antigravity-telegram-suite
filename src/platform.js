@@ -81,7 +81,7 @@ function isIDERunning() {
                 });
                 break;
             case 'darwin':
-                cmd = `pgrep -f "Antigravity.app/Contents/MacOS"`;
+                cmd = `pgrep -i "antigravity"`;
                 exec(cmd, (err, stdout) => {
                     resolve(!!(stdout && stdout.trim()));
                 });
