@@ -124,7 +124,14 @@ const UI_LOCATORS_SCRIPT = `
                 const btn = svgPath.closest('button');
                 if (btn) return btn;
             }
-            return document.querySelector('[aria-label*="New Chat" i], [title*="New Chat" i], [aria-label*="Yeni Sohbet" i], [class*="new-chat"], [aria-label*="New Task" i], [title*="New Task" i]') || null;
+            const ariaBtn = document.querySelector('[aria-label*="New Chat" i], [title*="New Chat" i], [aria-label*="Yeni Sohbet" i], [class*="new-chat"], [aria-label*="New Task" i], [title*="New Task" i]');
+            if (ariaBtn) return ariaBtn;
+            
+            const btns = Array.from(document.querySelectorAll('button'));
+            return btns.find(b => {
+                const text = (b.textContent || '').trim().toLowerCase();
+                return text === 'add' || !!b.querySelector('.lucide-plus');
+            }) || null;
         },
 
         /**
